@@ -52,12 +52,12 @@ const SX = WX + BW, SY = WY + BW + 36, SW = WW - 2 * BW, SH = WH - BW - 36 - 18;
 const AX = SX + 150, AY = SY + SH - 56;
 
 const EMIT: { x: number; y: number; ang: number; len: number; w: number;
-  i: number; hue: number; front: number }[] = [];
+  i: number; hue: number; front: number; taper: number }[] = [];
 function emitToward(tx: number, ty: number, len: number, w: number, i: number,
-  hue: number, front: number) {
+  hue: number, front: number, taper = 0) {
   const dx = tx - AX, dy = ty - AY, d = Math.hypot(dx, dy);
   const ex = AX + dx / d * (len * 0.16), ey = AY + dy / d * (len * 0.16);
-  EMIT.push({ x: ex, y: ey, ang: Math.atan2(dy, dx), len, w, i, hue, front });
+  EMIT.push({ x: ex, y: ey, ang: Math.atan2(dy, dx), len, w, i, hue, front, taper });
 }
 // main fan: mostly up and outward, asymmetric (leans viewer-left)
 for (let k = 0; k < 11; k++) {
@@ -73,8 +73,8 @@ for (let k = 0; k < 6; k++) {
     rf(380, 560), rf(4, 7), rf(0.75, 1.2), rf(0.75, 1.0), 0);
 }
 // a couple of lateral breaches through the side borders (lower energy)
-emitToward(WX - 160, WY + 130, 260, 5, 0.55, 0.35, 0);
-emitToward(WX + WW + 170, WY + 170, 240, 5, 0.5, 0.45, 0);
+emitToward(WX - 160, WY + 130, 260, 5, 0.55, 0.35, 0, 0.55);
+emitToward(WX + WW + 170, WY + 170, 240, 5, 0.5, 0.45, 0, 0.55);
 // two dramatic shards of light that fly in FRONT of the window
 for (let k = 0; k < 3; k++) {
   const ang = -Math.PI / 2 + rf(-1.0, 0.9);
@@ -85,12 +85,13 @@ for (let k = 0; k < 3; k++) {
 
 // precompute emitter segments (exit -> tip), in flat arrays for the hot loop
 const SEGS: { x1: number; y1: number; x2: number; y2: number; w: number;
-  i: number; cr: number; cg: number; cb: number; front: number }[] =
+  i: number; cr: number; cg: number; cb: number; front: number;
+  taper: number }[] =
   EMIT.map(e => {
     const c = Math.cos(e.ang), s = Math.sin(e.ang);
     const t = e.hue, [r, g, b] = ramp(t);
     return { x1: e.x, y1: e.y, x2: e.x + c * e.len, y2: e.y + s * e.len,
-      w: e.w, i: e.i, cr: r, cg: g, cb: b, front: e.front };
+      w: e.w, i: e.i, cr: r, cg: g, cb: b, front: e.front, taper: e.taper };
   });
 function ramp(t: number): [number, number, number] {
   // cyan -> violet-magenta -> warm gold as the beam travels outward
@@ -128,6 +129,16 @@ for (let k = 0; k < 150; k++) {
   const dist = rf(60, 620) * (0.35 + rnd() * rnd());
   SPARKS.push({ x: AX + Math.cos(ang) * dist, y: AY + Math.sin(ang) * dist,
     a: ang, len: rf(6, 20), b: rf(0.4, 1), front });
+}
+// fine sparks: a denser, smaller class hugging the upward beam axis —
+// reads as ember dust in the light column rather than scattered debris
+const FINE: Spark[] = [];
+for (let k = 0; k < 60; k++) {
+  const front = k < 16 ? 1 : 0;
+  const ang = -Math.PI / 2 + (rnd() - 0.5) * 0.7;   // tight to the axis
+  const dist = rf(40, 480) * (0.3 + rnd() * rnd());
+  FINE.push({ x: AX + Math.cos(ang) * dist + rf(-14, 14),
+    y: AY + Math.sin(ang) * dist, a: ang, len: rf(3, 9), b: rf(0.25, 0.6), front });
 }
 
 // ---------------------------------------------------------------- 5x7 font
@@ -199,7 +210,17 @@ function addField(segs: typeof SEGS, Ea: Float32Array, CRa: Float32Array,
         const amt = v * s.i;
         const dark = 0.72 - 0.35 * u;                 // mid-fan keeps its hue
         Ea[i] += amt;
-        CRa[i] += amt * s.cr * dark; CGa[i] += amt * s.cg * dark; CBa[i] += amt * s.cb * dark;
+        // white-hot core: innermost 20% of beam width is pure white,
+        // fading white -> accent over the next 30% (no brightness change)
+        const hw = s.w * (1 - u * 0.65) || 1;
+        const wm = d <= hw * 0.2 ? 1 : d >= hw * 0.5 ? 0 : (hw * 0.5 - d) / (hw * 0.3);
+        if (wm > 0 && s.taper === 0) {                // lateral breaches stay tinted
+          CRa[i] += amt * ((s.cr * dark) * (1 - wm) + wm);
+          CGa[i] += amt * ((s.cg * dark) * (1 - wm) + wm);
+          CBa[i] += amt * ((s.cb * dark) * (1 - wm) + wm);
+        } else {
+          CRa[i] += amt * s.cr * dark; CGa[i] += amt * s.cg * dark; CBa[i] += amt * s.cb * dark;
+        }
       }
     }
   }
@@ -320,7 +341,7 @@ addField(SEGS.filter(s => s.front), E2, CR2, CG2, CB2, false);
 
 // spark dots with streaks
 function drawSparks(front: number) {
-  for (const sp of SPARKS) {
+  for (const sp of [...SPARKS, ...FINE]) {
     if (sp.front !== front) continue;
     const c = Math.cos(sp.a), s = Math.sin(sp.a);
     for (let t = 0; t < sp.len; t += 1.5) {
