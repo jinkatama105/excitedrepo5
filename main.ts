@@ -62,7 +62,7 @@ function emitToward(tx: number, ty: number, len: number, w: number, i: number,
 // main fan: mostly up and outward, asymmetric (leans viewer-left)
 for (let k = 0; k < 11; k++) {
   const ang = -Math.PI / 2 + rf(-1.32, 1.16);
-  const len = rf(560, 940) * (Math.abs(Math.cos(ang)) * 0.7 + 0.35);
+  const len = rf(560, 940) * (Math.abs(Math.sin(ang)) * 0.3 + 0.7);
   emitToward(AX + Math.cos(ang) * len, AY + Math.sin(ang) * len, len,
     rf(5, 9), rf(0.6, 1.15), rf(0.1, 0.5), 0);
 }
