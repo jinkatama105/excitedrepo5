@@ -60,11 +60,24 @@ function emitToward(tx: number, ty: number, len: number, w: number, i: number,
   EMIT.push({ x: ex, y: ey, ang: Math.atan2(dy, dx), len, w, i, hue, front, taper });
 }
 // main fan: mostly up and outward, asymmetric (leans viewer-left)
+// lateral-beam taper: rays within taperStart (30° in radians) of straight
+// left/right are shorter (len *= lateralBeam) and carry reduced weight.
+const taperStart = (30 * Math.PI) / 180;
+const lateralBeam = 0.6;                        // ramp factor for grazing rays
 for (let k = 0; k < 11; k++) {
   const ang = -Math.PI / 2 + rf(-1.32, 1.16);
-  const len = rf(560, 940) * (Math.abs(Math.sin(ang)) * 0.3 + 0.7);
+  let len = rf(560, 940) * (Math.abs(Math.sin(ang)) * 0.3 + 0.7);
+  const w0 = rf(5, 9);
+  const i0 = rf(0.6, 1.15);
+  const hue = rf(0.1, 0.5);
+  let w = w0;
+  let inten = i0;
+  const fromHoriz = Math.asin(Math.min(1, Math.abs(Math.sin(ang))));
+  if (fromHoriz < taperStart) {                 // nearly-horizontal breach
+    len *= lateralBeam; w *= lateralBeam; inten *= lateralBeam;
+  }
   emitToward(AX + Math.cos(ang) * len, AY + Math.sin(ang) * len, len,
-    rf(5, 9), rf(0.6, 1.15), rf(0.1, 0.5), 0);
+    w, inten, hue, 0);
 }
 // short steep spikes straight out of the card top
 for (let k = 0; k < 6; k++) {
@@ -132,12 +145,12 @@ for (let k = 0; k < 150; k++) {
 }
 // fine sparks: a denser, smaller class hugging the upward beam axis —
 // reads as ember dust in the light column rather than scattered debris
-const FINE: Spark[] = [];
+const fineSparks: Spark[] = [];
 for (let k = 0; k < 60; k++) {
   const front = k < 16 ? 1 : 0;
   const ang = -Math.PI / 2 + (rnd() - 0.5) * 0.7;   // tight to the axis
   const dist = rf(40, 480) * (0.3 + rnd() * rnd());
-  FINE.push({ x: AX + Math.cos(ang) * dist + rf(-14, 14),
+  fineSparks.push({ x: AX + Math.cos(ang) * dist + rf(-14, 14),
     y: AY + Math.sin(ang) * dist, a: ang, len: rf(3, 9), b: rf(0.25, 0.6), front });
 }
 
@@ -183,6 +196,12 @@ const CR2 = new Float32Array(N), CG2 = new Float32Array(N), CB2 = new Float32Arr
 const WR = new Float32Array(N), WG = new Float32Array(N), WB = new Float32Array(N), WA = new Float32Array(N);
 WR.fill(0.04); WG.fill(0.05); WB.fill(0.08);                 // layer default (unused while A=0)
 
+// white-hot core factor for a beam-path pixel: innermost 20% of the local
+// half-width is pure white, fading to 0 by 50% (extracted verbatim from
+// addField so the numerics stay identical)
+function coreWhiteAt(d: number, hw: number): number {
+  return d <= hw * 0.2 ? 1 : d >= hw * 0.5 ? 0 : (hw * 0.5 - d) / (hw * 0.3);
+}
 function addField(segs: typeof SEGS, Ea: Float32Array, CRa: Float32Array,
   CGa: Float32Array, CBa: Float32Array, skipScreen: boolean) {
   for (const s of segs) {
@@ -213,7 +232,7 @@ function addField(segs: typeof SEGS, Ea: Float32Array, CRa: Float32Array,
         // white-hot core: innermost 20% of beam width is pure white,
         // fading white -> accent over the next 30% (no brightness change)
         const hw = s.w * (1 - u * 0.65) || 1;
-        const wm = d <= hw * 0.2 ? 1 : d >= hw * 0.5 ? 0 : (hw * 0.5 - d) / (hw * 0.3);
+        const wm = coreWhiteAt(d, hw);
         if (wm > 0 && s.taper === 0) {                // lateral breaches stay tinted
           CRa[i] += amt * ((s.cr * dark) * (1 - wm) + wm);
           CGa[i] += amt * ((s.cg * dark) * (1 - wm) + wm);
@@ -341,7 +360,7 @@ addField(SEGS.filter(s => s.front), E2, CR2, CG2, CB2, false);
 
 // spark dots with streaks
 function drawSparks(front: number) {
-  for (const sp of [...SPARKS, ...FINE]) {
+  for (const sp of [...SPARKS, ...fineSparks]) {
     if (sp.front !== front) continue;
     const c = Math.cos(sp.a), s = Math.sin(sp.a);
     for (let t = 0; t < sp.len; t += 1.5) {
@@ -398,6 +417,8 @@ drawSparks(1);
 drawShards(1);
 
 // ---------------------------------------------------------------- compose
+// per-frame body of the top-level render pass, wrapped by name so the
+// draw loop has an explicit call site (behavior identical)
 const out = Buffer.alloc(N * 3);
 const BGR = 0.028, BGG = 0.042, BGB = 0.09;          // deep navy void
 function vnoise(x: number, y: number, z: number): number {
@@ -406,6 +427,7 @@ function vnoise(x: number, y: number, z: number): number {
   const a = h2(xi, yi, z), b = h2(xi + 1, yi, z), c = h2(xi, yi + 1, z), d = h2(xi + 1, yi + 1, z);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
+function mainLoop() {
 for (let y = 0; y < H; y++) {
   const fy = y / H, row = y * W;
   // dark weighted ground: everything below the card sinks
@@ -455,6 +477,9 @@ for (let y = 0; y < H; y++) {
     out[o + 2] = Math.max(0, Math.min(255, Math.round(cb * 255 + d * 255)));
   }
 }
+}
+// existing top-level draw loop call site -> named mainLoop body
+mainLoop();
 
 // ---------------------------------------------------------------- PNG out
 const CRC_T = new Uint32Array(256);
